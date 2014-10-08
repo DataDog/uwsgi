@@ -25,43 +25,97 @@ struct dd_node {
   uint16_t prefix_len;
 };
 
-static int dd_generate_tags(char *metric, char *new_metric, char *tags) {
-  int metric_id;
-  char metric_key[MAX_VARS];
-  char metric_name[MAX_VARS];
+static int dd_generate_tags(char *metric, size_t metric_len, char *new_metric, char *tags) {
+  char *start = metric;
+  size_t metric_offset = 0;
 
-  // verify if we can find metric ID
-  if (sscanf(metric, "%[^.].%d.%[^$]", metric_name, &metric_id, metric_key) == 3) {
+  static char metric_separator[] = ".";
+  static char tag_separator[] = ",";
+  static char tag_colon[] = ":";
+  static char tag_prefix[] = "|#";
 
-    // prepare tags metadata string
-    int ret = snprintf(tags, (MAX_VARS - 1), "|#%s:%i", metric_name, metric_id);
-    if (ret <= 0 || ret >= (int) (MAX_VARS - 1)) {
+  long id;
+  int ret;
+  char *token = NULL, *key = NULL, *p = NULL;
+
+  errno = 0;
+
+  token = strtok(metric, metric_separator);
+
+  if (token) {
+    metric_offset += strlen(token) + 1;
+    start = metric + metric_offset;
+  } else
+    return -1;
+
+  while ( token != NULL && metric_len >= metric_offset) {
+
+    // try to convert token into integer
+    id = strtol(token, &p, 10);
+
+    // stop processing if id is out of range
+    if ((id == LONG_MIN || id == LONG_MAX) && errno == ERANGE)
       return -1;
+
+    // check if we actually found an integer
+    //  make sure we also have ready key
+    if ( p != token && key) {
+
+      // start with tag_separator if we already have some tags
+      if (strlen(tags))
+       strcat(tags, tag_separator);
+      else
+       strcat(tags, tag_prefix);
+
+      // add key to the tags list
+      strncat(tags, key, (metric_len - strlen(tags) - 1));
+
+      // add the value
+      ret = snprintf(tags, metric_len - 1, "%s:%ld", tags, id);
+
+      if (ret <= 0 || ret >= (int) (metric_len - 1))
+        return -1;
+
+    } else {
+
+      // store token as a key for the next iteration
+      key = token;
+
+      // start with metric_separator if we already have some metrics
+      if (strlen(new_metric))
+       strncat(new_metric, metric_separator, metric_len - 1);
+
+      // add token
+      strncat(new_metric, token, (metric_len - strlen(new_metric) - 1));
     }
 
-    // set the new metric name
-    ret = snprintf(new_metric, (MAX_VARS - 1), "%s.%s", metric_name, metric_key);
-    if (ret <= 0 || ret >= (int) (MAX_VARS - 1)) {
-      return -1;
-    }
+    // try to generate tokens before we iterate again
+    token = strtok(start, metric_separator);
 
-    return 1;
+    // prepare start point for the next iteration
+    if (token) {
+      metric_offset += strlen(token) + 1;
+      start = metric + metric_offset;
+    }
   }
 
-  return 0;
-
+  return strlen(new_metric);
 }
+
 
 static int dd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pusher_instance *uspi, char *metric, size_t metric_len, int64_t value, char type[2]) {
   struct dd_node *sn = (struct dd_node *) uspi->data;
 
-  char tags[MAX_VARS];
-  char new_metric[MAX_VARS];
+  char old_metric[MAX_VARS], tags[MAX_VARS], new_metric[MAX_VARS];
 
   // reset the buffer
   ub->pos = 0;
 
-  int got_tags = dd_generate_tags(metric, new_metric, tags);
+  memset(tags, 0, MAX_VARS);
+  memset(new_metric, 0, MAX_VARS);
+  strncpy(old_metric, metric, metric_len);
+
+  int got_tags = dd_generate_tags(old_metric, metric_len, new_metric, tags);
   if ( got_tags < 0 ) return -1;
 
   if (uwsgi_buffer_append(ub, sn->prefix, sn->prefix_len)) return -1;
