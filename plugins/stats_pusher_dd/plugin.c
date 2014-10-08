@@ -31,7 +31,7 @@ static int dd_generate_tags(char *metric, size_t metric_len, char *new_metric, c
 
   static char metric_separator[] = ".";
   static char tag_separator[] = ",";
-  static char tag_colon[] = ":";
+  static char tag_colon = ':';
   static char tag_prefix[] = "|#";
 
   long id;
@@ -71,7 +71,7 @@ static int dd_generate_tags(char *metric, size_t metric_len, char *new_metric, c
       strncat(tags, key, (metric_len - strlen(tags) - 1));
 
       // add the value
-      ret = snprintf(tags, metric_len - 1, "%s:%ld", tags, id);
+      ret = snprintf(tags, metric_len - 1, "%s%c%ld", tags, tag_colon, id);
 
       if (ret <= 0 || ret >= (int) (metric_len - 1))
         return -1;
