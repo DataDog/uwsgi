@@ -1,5 +1,7 @@
 #include <uwsgi.h>
 
+#define MAX_BUFFER_SIZE 8192
+
 /*
 
 this is a stats pusher plugin for the dd server:
@@ -25,7 +27,7 @@ struct dd_node {
   uint16_t prefix_len;
 };
 
-static int dd_generate_tags(char *metric, size_t metric_len, char *new_metric, char *tags) {
+static int dd_generate_tags(char *metric, size_t metric_len, char *datatog_metric_name, char *datadog_tags) {
   char *start = metric;
   size_t metric_offset = 0;
 
@@ -34,46 +36,48 @@ static int dd_generate_tags(char *metric, size_t metric_len, char *new_metric, c
   static char tag_colon = ':';
   static char tag_prefix[] = "|#";
 
-  long id;
-  int ret;
-  char *token = NULL, *key = NULL, *p = NULL;
+  long string_to_int;
+  int got_bytes;
+  char *token = NULL;
+  char *key = NULL;
+  char *next_character = NULL;
 
   errno = 0;
 
-  token = strtok(metric, metric_separator);
+  token = strtok(start, metric_separator);
 
-  if (token) {
-    metric_offset += strlen(token) + 1;
-    start = metric + metric_offset;
-  } else
+  if (!token)
     return -1;
 
-  while ( token != NULL && metric_len >= metric_offset) {
+  while (token != NULL && metric_len >= metric_offset) {
+
+    metric_offset += strlen(token) + 1;
+    start = metric + metric_offset;
 
     // try to convert token into integer
-    id = strtol(token, &p, 10);
+    string_to_int = strtol(token, &next_character, 10);
 
-    // stop processing if id is out of range
-    if ((id == LONG_MIN || id == LONG_MAX) && errno == ERANGE)
+    // stop processing if string_to_int is out of range
+    if ((string_to_int == LONG_MIN || string_to_int == LONG_MAX) && errno == ERANGE)
       return -1;
 
-    // check if we actually found an integer
-    //  make sure we also have ready key
-    if ( p != token && key) {
+    // check if we actually found an integer and make sure we also have ready key
+    if (next_character != token && key) {
 
       // start with tag_separator if we already have some tags
-      if (strlen(tags))
-       strcat(tags, tag_separator);
+      //   otherwise put the tag_prefix
+      if (strlen(datadog_tags))
+       strncat(datadog_tags, tag_separator, (MAX_BUFFER_SIZE - strlen(datadog_tags) - strlen(tag_separator) - 1));
       else
-       strcat(tags, tag_prefix);
+       strcat(datadog_tags, tag_prefix);
 
-      // add key to the tags list
-      strncat(tags, key, (metric_len - strlen(tags) - 1));
+      // add key to the datadog_tags list
+      strncat(datadog_tags, key, (MAX_BUFFER_SIZE - strlen(datadog_tags) - strlen(key) - 1));
 
       // add the value
-      ret = snprintf(tags, metric_len - 1, "%s%c%ld", tags, tag_colon, id);
+      got_bytes = snprintf(datadog_tags, metric_len - 1, "%s%c%ld", datadog_tags, tag_colon, string_to_int);
 
-      if (ret <= 0 || ret >= (int) (metric_len - 1))
+      if (got_bytes <= 0 || got_bytes >= (int) (MAX_BUFFER_SIZE - 1))
         return -1;
 
     } else {
@@ -82,48 +86,56 @@ static int dd_generate_tags(char *metric, size_t metric_len, char *new_metric, c
       key = token;
 
       // start with metric_separator if we already have some metrics
-      if (strlen(new_metric))
-       strncat(new_metric, metric_separator, metric_len - 1);
+      if (strlen(datatog_metric_name))
+       strncat(datatog_metric_name, metric_separator, (MAX_BUFFER_SIZE - strlen(datatog_metric_name) - strlen(metric_separator) - 1));
 
       // add token
-      strncat(new_metric, token, (metric_len - strlen(new_metric) - 1));
+      strncat(datatog_metric_name, token, (MAX_BUFFER_SIZE - strlen(datatog_metric_name) - strlen(token) - 1));
     }
 
     // try to generate tokens before we iterate again
     token = strtok(start, metric_separator);
-
-    // prepare start point for the next iteration
-    if (token) {
-      metric_offset += strlen(token) + 1;
-      start = metric + metric_offset;
-    }
   }
 
-  return strlen(new_metric);
+  return strlen(datatog_metric_name);
 }
 
 
 static int dd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pusher_instance *uspi, char *metric, size_t metric_len, int64_t value, char type[2]) {
   struct dd_node *sn = (struct dd_node *) uspi->data;
 
-  char old_metric[MAX_VARS], tags[MAX_VARS], new_metric[MAX_VARS];
+  char datatog_metric_name[MAX_BUFFER_SIZE];
+  char datadog_tags[MAX_BUFFER_SIZE];
+  char raw_metric_name[MAX_BUFFER_SIZE];
+
+  int got_tags = 0;
+
+  // check if we can handle such a metric length
+  if (metric_len >= MAX_BUFFER_SIZE)
+    return -1;
 
   // reset the buffer
   ub->pos = 0;
 
-  memset(tags, 0, MAX_VARS);
-  memset(new_metric, 0, MAX_VARS);
-  strncpy(old_metric, metric, metric_len);
+  // sanitize buffers
+  memset(datadog_tags, 0, MAX_BUFFER_SIZE);
+  memset(datatog_metric_name, 0, MAX_BUFFER_SIZE);
 
-  int got_tags = dd_generate_tags(old_metric, metric_len, new_metric, tags);
-  if ( got_tags < 0 ) return -1;
+  // let's copy original metric name before we start
+  strncpy(raw_metric_name, metric, metric_len + 1);
+
+  // try to extract tags
+  got_tags = dd_generate_tags(raw_metric_name, metric_len, datatog_metric_name, datadog_tags);
+
+  if (got_tags < 0)
+    return -1;
 
   if (uwsgi_buffer_append(ub, sn->prefix, sn->prefix_len)) return -1;
   if (uwsgi_buffer_append(ub, ".", 1)) return -1;
 
-  // put the new_metric if we found some tags
+  // put the datatog_metric_name if we found some tags
   if (got_tags) {
-    if (uwsgi_buffer_append(ub, new_metric, strlen(new_metric))) return -1;
+    if (uwsgi_buffer_append(ub, datatog_metric_name, strlen(datatog_metric_name))) return -1;
   } else {
     if (uwsgi_buffer_append(ub, metric, strlen(metric))) return -1;
   }
@@ -134,7 +146,7 @@ static int dd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pusher_ins
 
   // add tags metadata if there are any
   if (got_tags) {
-    if (uwsgi_buffer_append(ub, tags, strlen(tags))) return -1;
+    if (uwsgi_buffer_append(ub, datadog_tags, strlen(datadog_tags))) return -1;
   }
 
   if (sendto(sn->fd, ub->buf, ub->pos, 0, (struct sockaddr *) &sn->addr.sa_in, sn->addr_len) < 0) {
