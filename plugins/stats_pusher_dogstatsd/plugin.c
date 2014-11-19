@@ -4,13 +4,13 @@
 
 /*
 
-this is a stats pusher plugin for the dd server:
+this is a stats pusher plugin for the DogStatsD :
 
---stats-push dd:address[,prefix]
+--stats-push dogstatsd:address[,prefix]
 
 example:
 
---stats-push dd:127.0.0.1:8125,myinstance
+--stats-push dogstatsd:127.0.0.1:8125,myinstance
 
 it exports values exposed by the metric subsystem
 
@@ -18,8 +18,8 @@ it exports values exposed by the metric subsystem
 
 extern struct uwsgi_server uwsgi;
 
-// configuration of a dd node
-struct dd_node {
+// configuration of a dogstatsd node
+struct dogstatsd_node {
   int fd;
   union uwsgi_sockaddr addr;
   socklen_t addr_len;
@@ -27,7 +27,7 @@ struct dd_node {
   uint16_t prefix_len;
 };
 
-static int dd_generate_tags(char *metric, size_t metric_len, char *datatog_metric_name, char *datadog_tags) {
+static int dogstatsd_generate_tags(char *metric, size_t metric_len, char *datatog_metric_name, char *datadog_tags) {
   char *start = metric;
   size_t metric_offset = 0;
 
@@ -101,8 +101,8 @@ static int dd_generate_tags(char *metric, size_t metric_len, char *datatog_metri
 }
 
 
-static int dd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pusher_instance *uspi, char *metric, size_t metric_len, int64_t value, char type[2]) {
-  struct dd_node *sn = (struct dd_node *) uspi->data;
+static int dogstatsd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pusher_instance *uspi, char *metric, size_t metric_len, int64_t value, char type[2]) {
+  struct dogstatsd_node *sn = (struct dogstatsd_node *) uspi->data;
 
   char datatog_metric_name[MAX_BUFFER_SIZE];
   char datadog_tags[MAX_BUFFER_SIZE];
@@ -125,7 +125,7 @@ static int dd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pusher_ins
   strncpy(raw_metric_name, metric, metric_len + 1);
 
   // try to extract tags
-  got_tags = dd_generate_tags(raw_metric_name, metric_len, datatog_metric_name, datadog_tags);
+  got_tags = dogstatsd_generate_tags(raw_metric_name, metric_len, datatog_metric_name, datadog_tags);
 
   if (got_tags < 0)
     return -1;
@@ -150,17 +150,17 @@ static int dd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pusher_ins
   }
 
   if (sendto(sn->fd, ub->buf, ub->pos, 0, (struct sockaddr *) &sn->addr.sa_in, sn->addr_len) < 0) {
-    uwsgi_error("dd_send_metric()/sendto()");
+    uwsgi_error("dogstatsd_send_metric()/sendto()");
   }
 
   return 0;
 }
 
 
-static void stats_pusher_dd(struct uwsgi_stats_pusher_instance *uspi, time_t now, char *json, size_t json_len) {
+static void stats_pusher_dogstatsd(struct uwsgi_stats_pusher_instance *uspi, time_t now, char *json, size_t json_len) {
 
   if (!uspi->configured) {
-    struct dd_node *sn = uwsgi_calloc(sizeof(struct dd_node));
+    struct dogstatsd_node *sn = uwsgi_calloc(sizeof(struct dogstatsd_node));
     char *comma = strchr(uspi->arg, ',');
     if (comma) {
       sn->prefix = comma+1;
@@ -183,7 +183,7 @@ static void stats_pusher_dd(struct uwsgi_stats_pusher_instance *uspi, time_t now
 
     sn->fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sn->fd < 0) {
-      uwsgi_error("stats_pusher_dd()/socket()");
+      uwsgi_error("stats_pusher_dogstatsd()/socket()");
       if (comma) *comma = ',';
                         free(sn);
                         return;
@@ -201,10 +201,10 @@ static void stats_pusher_dd(struct uwsgi_stats_pusher_instance *uspi, time_t now
     uwsgi_rlock(uwsgi.metrics_lock);
     // ignore return value
     if (um->type == UWSGI_METRIC_GAUGE) {
-      dd_send_metric(ub, uspi, um->name, um->name_len, *um->value, "|g");
+      dogstatsd_send_metric(ub, uspi, um->name, um->name_len, *um->value, "|g");
     }
     else {
-      dd_send_metric(ub, uspi, um->name, um->name_len, *um->value, "|c");
+      dogstatsd_send_metric(ub, uspi, um->name, um->name_len, *um->value, "|c");
     }
     uwsgi_rwunlock(uwsgi.metrics_lock);
     if (um->reset_after_push){
@@ -217,15 +217,15 @@ static void stats_pusher_dd(struct uwsgi_stats_pusher_instance *uspi, time_t now
   uwsgi_buffer_destroy(ub);
 }
 
-static void stats_pusher_dd_init(void) {
-        struct uwsgi_stats_pusher *usp = uwsgi_register_stats_pusher("dd", stats_pusher_dd);
+static void stats_pusher_dogstatsd_init(void) {
+        struct uwsgi_stats_pusher *usp = uwsgi_register_stats_pusher("dogstatsd", stats_pusher_dogstatsd);
   // we use a custom format not the JSON one
   usp->raw = 1;
 }
 
-struct uwsgi_plugin stats_pusher_dd_plugin = {
+struct uwsgi_plugin stats_pusher_dogstatsd_plugin = {
 
-        .name = "stats_pusher_dd",
-        .on_load = stats_pusher_dd_init,
+        .name = "stats_pusher_dogstatsd",
+        .on_load = stats_pusher_dogstatsd_init,
 };
 
