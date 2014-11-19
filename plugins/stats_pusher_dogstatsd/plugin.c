@@ -108,7 +108,7 @@ static int dogstatsd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pus
   char datadog_tags[MAX_BUFFER_SIZE];
   char raw_metric_name[MAX_BUFFER_SIZE];
 
-  int got_tags = 0;
+  int extracted_tags = 0;
 
   // check if we can handle such a metric length
   if (metric_len >= MAX_BUFFER_SIZE)
@@ -125,16 +125,16 @@ static int dogstatsd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pus
   strncpy(raw_metric_name, metric, metric_len + 1);
 
   // try to extract tags
-  got_tags = dogstatsd_generate_tags(raw_metric_name, metric_len, datatog_metric_name, datadog_tags);
+  extracted_tags = dogstatsd_generate_tags(raw_metric_name, metric_len, datatog_metric_name, datadog_tags);
 
-  if (got_tags < 0)
+  if (extracted_tags < 0)
     return -1;
 
   if (uwsgi_buffer_append(ub, sn->prefix, sn->prefix_len)) return -1;
   if (uwsgi_buffer_append(ub, ".", 1)) return -1;
 
   // put the datatog_metric_name if we found some tags
-  if (got_tags) {
+  if (extracted_tags) {
     if (uwsgi_buffer_append(ub, datatog_metric_name, strlen(datatog_metric_name))) return -1;
   } else {
     if (uwsgi_buffer_append(ub, metric, strlen(metric))) return -1;
@@ -145,7 +145,7 @@ static int dogstatsd_send_metric(struct uwsgi_buffer *ub, struct uwsgi_stats_pus
   if (uwsgi_buffer_append(ub, type, 2)) return -1;
 
   // add tags metadata if there are any
-  if (got_tags) {
+  if (extracted_tags) {
     if (uwsgi_buffer_append(ub, datadog_tags, strlen(datadog_tags))) return -1;
   }
 
